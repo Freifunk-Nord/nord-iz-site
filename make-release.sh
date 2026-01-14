@@ -1,17 +1,5 @@
 #!/bin/bash
-
-## This script will compile Gluon for all architectures, create the
-## manifest and sign it. For that, you must have cloned gluon and have a
-## valid site config. Additionally, the signing key must be present in
-## ../../ecdsa-key-secret or defined as first argument.
-## The second argument defines the branch (stable, rc, nightly).
-## The third argument defines the version.
-## Call from site directory with the version and branch variables
-## properly configured in this script.
-
-# report the usage of uninitialized variables, etc
 set -u
-# stop on first error (not working in if clauses)
 set -e
 
 # if version is unset, will use the default version from site.mk
@@ -19,14 +7,12 @@ set -e
 VERSION=${3:-"2018.2.1"}
 # branch must be set to either rc, nightly or stable
 BRANCH=${2:-"stable"}
-# must point to valid ecdsa signing key created by ecdsakeygen, relative to Gluon base directory
-SIGNING_KEY=${1:-"../ecdsa-key-secret"}
 
 # BROKEN must be set to "" or "BROKEN=1"
 BROKEN="BROKEN=1"
 
 # set num cores +1
-CORES=$(($(lscpu|grep -e '^CPU(s):'|xargs|cut -d" " -f2)+1))
+CORES=$(nproc)
 CORES="-j$CORES"
 
 # set this to "0" if you don't want to use make clean before make
@@ -42,21 +28,9 @@ ONLY_TARGET="ar71xx-generic"
 #DEVICES=''
 DEVICES='DEVICES=tp-link-tl-wr842n-nd-v3'
 
-cd ../
-if [ ! -d "site" ]; then
-  echo "This script must be called from within the site directory"
-  exit
-fi
+cd gluon
 
-if [ "$(whoami)" == "root" ]; then
-  echo "Make may not be run as root"
-fi
-
-echo "############## starting build process #################" >> build.log
-date >> build.log
-echo "if you want to start over empty the folder ../output/"
-echo "see debug output with"
-echo "tail -F ../build.log|grep -i error|grep -v CFLAGS|egrep -v '(checking|CC|LD|gcc|Entering|leaving|v -f|rm -rf|cp -f|rm -f|Applying|patching|Installing)' &"
+echo "############## starting build process #################"
 sleep 3
 
 #rm -r output
@@ -89,55 +63,26 @@ if [ "$ONLY_TARGET" != "" ]; then
 fi
 
 for TARGET in $TARGETS; do
-  date >> build.log
-  echo "Starting work on target $TARGET $DEVICES" | tee -a build.log
-  OPTIONS="GLUON_TARGET=$TARGET $BROKEN $CORES GLUON_BRANCH=$BRANCH GLUON_RELEASE=$VERSION"
-  echo -e "\n===========\n\n\n\n\nmake $OPTIONS update" >> build.log
-  time make $OPTIONS update >> build.log 2>&1
-  if [ $MAKE_CLEAN = 1 ]; then
-    echo -e "\n===========\n\n\n\n\nmake $OPTIONS clean" >> build.log
-    time make $OPTIONS clean >> build.log 2>&1
-  fi
-  echo -e "\n===========\n\n\n\n\nmake $OPTIONS $DEVICES $VERBOSE" >> build.log
-  time make $OPTIONS $DEVICES $VERBOSE >> build.log 2>&1
-  echo -e "\n\n\n============================================================\n\n" >> build.log
-done
-date >> build.log
+  OPTIONS="GLUON_SITEDIR=.. GLUON_TARGET=$TARGET $BROKEN $CORES GLUON_BRANCH=$BRANCH GLUON_RELEASE=$VERSION"
+  make $OPTIONS update
 
-echo "Compilation complete, creating manifest(s)" | tee -a build.log
-set +e
+  if [ $MAKE_CLEAN = 1 ]; then
+    echo -e "\n===========\n\n\n\n\nmake $OPTIONS clean"
+    make $OPTIONS clean
+  fi
+  make $OPTIONS $DEVICES $VERBOSE
+done
+
+
 MANIFEST_OPTINS="GLUON_RELEASE=$VERSION $BROKEN $CORES"
 if [[ true ]]; then
   B="nightly"
-  echo -e "make $MANIFEST_OPTINS GLUON_BRANCH=$B manifest" >> build.log
-  make $MANIFEST_OPTINS GLUON_BRANCH=$B manifest >> build.log 2>&1
-  echo -e "\n\n\n============================================================\n\n" >> build.log
+  make $MANIFEST_OPTINS GLUON_BRANCH=$B manifest
 fi
 
 if [[ "$BRANCH" == "stable" ]]; then
   B="stable"
-  echo -e "make $MANIFEST_OPTINS GLUON_BRANCH=$B manifest" >> build.log
-  make $MANIFEST_OPTINS GLUON_BRANCH=$B manifest >> build.log 2>&1
-  echo -e "\n\n\n============================================================\n\n" >> build.log
+  make $MANIFEST_OPTINS GLUON_BRANCH=$B manifest
 fi
 
-echo "Manifest creation complete, signing manifest"
-
-echo -e "contrib/sign.sh $SIGNING_KEY output/images/sysupgrade/nightly.manifest" >> build.log
-contrib/sign.sh $SIGNING_KEY output/images/sysupgrade/nightly.manifest >> build.log 2>&1
-
-if [[ "$BRANCH" == "nightly" ]] || [[ "$BRANCH" == "stable" ]]; then
-  echo -e "contrib/sign.sh $SIGNING_KEY output/images/sysupgrade/nightly.manifest" >> build.log
-  contrib/sign.sh $SIGNING_KEY output/images/sysupgrade/nightly.manifest >> build.log 2>&1
-  # set date to before 04:00
-  sed -e 's/DATE=.*/DATE='$(date '+%y-%m-%d')' 00:00:00+02:00/g' output/images/sysupgrade/nightly.manifest
-fi
-
-if [[ "$BRANCH" == "stable" ]]; then
-  echo -e "contrib/sign.sh $SIGNING_KEY output/images/sysupgrade/stable.manifest" >> build.log
-  contrib/sign.sh $SIGNING_KEY output/images/sysupgrade/stable.manifest >> build.log 2>&1
-fi
-cd site
-date >> ../build.log
-mv -v ../output/images "../output/$VERSION"
 echo "Done :)"
