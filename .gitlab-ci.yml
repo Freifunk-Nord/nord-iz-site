@@ -207,11 +207,6 @@ upload:
   - rsync -rvhl ./latest ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/
 upload-package-registry:
   stage: deploy
-  needs:
-  - job: sign manifest
-    artifacts: true
-  - job: build-all
-    artifacts: true
   script:
   - TAG=$([[ $CI_COMMIT_TAG ]] && echo $CI_COMMIT_TAG || echo $CI_COMMIT_BRANCH)_$(date +%F_%H-%M-%S)
   - tree -L 3
