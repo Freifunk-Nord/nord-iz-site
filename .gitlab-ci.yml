@@ -34,8 +34,6 @@ stages:
 build-all:
   stage: build
   needs: []
-  tags:
-  - fast
   retry:
     max: 2
     when: runner_system_failure
@@ -126,8 +124,6 @@ generate manifest:
   stage: post build
   needs:
   - build-all
-  tags:
-  - fast
   cache:
     paths:
     - ccache
@@ -149,8 +145,6 @@ sign manifest:
   needs:
   - job: generate manifest
     artifacts: true
-  tags:
-  - fast
   rules:
   - if: $SIGNING_KEY
   script:
