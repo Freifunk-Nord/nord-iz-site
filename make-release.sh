@@ -12,14 +12,15 @@ BRANCH=${2:-"stable"}
 BROKEN="BROKEN=1"
 
 # set num cores +1
-CORES=$(nproc)
-CORES="-j$CORES"
+#CORES="-j$(nproc)"
+CORES="-j1"
 
 # set this to "0" if you don't want to use make clean before make
 MAKE_CLEAN="0"
 
 # set this to "" to get less more output
-VERBOSE="V=s"
+VERBOSE="V=sc"
+#VERBOSE=""
 
 #ONLY_TARGET must be set to "" or i.e. "ar71xx-tiny"
 #ONLY_TARGET=""
