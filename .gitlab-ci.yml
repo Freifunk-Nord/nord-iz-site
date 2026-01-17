@@ -1,20 +1,45 @@
+spec:
+  inputs:
+    job-prefix:     # Mandatory string input
+      description: "Define a prefix for the job name"
+      default: ""
+    job-stage:      # Optional string input with a default value when not provided
+      default: test
+    environment:    # Mandatory input that must match one of the options
+      options: ['test', 'staging', 'production']
+      default: test
+    concurrency:
+      type: number  # Optional numeric input with a default value when not provided
+      default: 1
+    version:        # Mandatory string input that must match the regular expression
+      type: string
+      regex: ^v\d\.\d+(\.\d+)$
+      default: "v0.0.1"
+    gluon_debug_build: # Optional boolean input with a default value when not provided
+      type: boolean
+      default: false
+---
+
 image: registry.chaotikum.net/freifunk-luebeck/gluon-build:bullseye
+
 default:
   interruptible: true
 before_script:
-- apt-get update > /dev/null
-- apt-get install -y curl git libncurses-dev build-essential make gawk unzip wget
-  python2.7 file tar bzip2 tree ccache ecdsautils rsync > /dev/null
-- mkdir -p ccache
-- mkdir -p logs
-- PATH="/usr/lib/ccache:$PATH"
-- git -C gluon fetch --tags
+  - apt-get update > /dev/null
+  - apt-get install -y curl git libncurses-dev build-essential make gawk unzip wget
+    python2.7 file tar bzip2 tree ccache ecdsautils rsync > /dev/null
+  - mkdir -p ccache
+  - mkdir -p logs
+  - PATH="/usr/lib/ccache:$PATH"
+  - git -C gluon fetch --tags
+
 workflow:
   rules:
   - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
     when: never
   - if: $CI_COMMIT_BRANCH
+
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
   CCACHE_DIR: $CI_PROJECT_DIR/ccache
@@ -22,16 +47,18 @@ variables:
   CCACHE_MAXSIZE: 5G
   CCACHE_COMPILERCHECK: content
   FORCE_UNSAFE_CONFIGURE: '1'
+
 stages:
-- pre-build-tests
-- build
-- build-on-failure
-- post build
-- test
-- prepare-deploy
-- test-deploy
-- deploy
-build-all:
+  - pre-build-tests
+  - build
+  - build-on-failure
+  - post build
+  - test
+  - prepare-deploy
+  - test-deploy
+  - deploy
+
+.build_all:
   stage: build
   needs: []
   retry:
@@ -40,6 +67,37 @@ build-all:
   cache:
     paths:
     - ccache
+  parallel:
+    matrix: []
+  variables:
+    GLUON_SITEDIR: ..
+    GLUON_DEPRECATED: 1
+    GLUON_AUTOUPDATER_ENABLED: 1
+    GLUON_AUTOUPDATER_BRANCH: stable
+    GIT_SUBMODULE_STRATEGY: recursive
+    CCACHE_DIR: $CI_PROJECT_DIR/ccache
+    CCACHE_BASEDIR: $CI_PROJECT_DIR/ccache
+    CCACHE_MAXSIZE: 5G
+    CCACHE_COMPILERCHECK: content
+    FORCE_UNSAFE_CONFIGURE: '1'
+  script:
+    - file $(which gcc)
+    - du -sh ccache/
+    - ccache -s
+    - ccache -z
+    - tree -L 2
+    - env | grep CI
+    - make -C gluon update
+    - make -C gluon -j $(nproc) GLUON_TARGET=$TARGET 2>&1 | tee "logs/build_${TARGET}.log"
+    - ccache -s
+  artifacts:
+    expire_in: 3 day
+    paths:
+      - gluon/output
+      - logs
+
+build-all:
+  extends: .build_all
   parallel:
     matrix:
     - TARGET:
@@ -64,66 +122,79 @@ build-all:
       - x86-geode
       - x86-legacy
       - x86-64
-  variables:
-    GLUON_SITEDIR: ..
-    GLUON_DEPRECATED: 1
-    GLUON_AUTOUPDATER_ENABLED: 1
-    GLUON_AUTOUPDATER_BRANCH: stable
-    GIT_SUBMODULE_STRATEGY: recursive
-    CCACHE_DIR: $CI_PROJECT_DIR/ccache
-    CCACHE_BASEDIR: $CI_PROJECT_DIR/ccache
-    CCACHE_MAXSIZE: 5G
-    CCACHE_COMPILERCHECK: content
-    FORCE_UNSAFE_CONFIGURE: '1'
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: '"[[ inputs.gluon_debug_build ]]" == "false"'
+
+build-quick:
+  extends: .build_all
+  parallel:
+    matrix:
+      - TARGET:
+        - ath79-generic
+        - x86-64
+        - ramips-mt7620
+  rules:
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "false"'
+
+
+build-quick-debug:
+  extends: .build_all
+  stage: build-on-failure
+  parallel:
+    matrix:
+      - TARGET:
+        - ath79-generic
+        - x86-64
+        - ramips-mt7620
   script:
-  - file $(which gcc)
-  - du -sh ccache/
-  - ccache -s
-  - ccache -z
-  - tree -L 2
-  - env | grep CI
-  - make -C gluon update
-  - make -C gluon -j $((($(nproc)+1) / 2)) GLUON_TARGET=$TARGET 2>&1 | tee "logs/build_${TARGET}.log"
-  - ccache -s
+    - file $(which gcc)
+    - tree -L 3
+    - env | grep CI
+    - make -C gluon update
+    - ccache -s
+    - ccache -z
+    - make -C gluon -j 1 V=sc GLUON_TARGET=$TARGET 2>&1 | tee "logs/build_${TARGET}.log" | tail -c 100000
+    - ccache -s
   artifacts:
     expire_in: 3 day
     paths:
-    - gluon/output
-    - logs
+      - logs
+  dependencies: []
+  rules:
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "true"'
+
+
 test:images:
   stage: test
-  needs:
-  - build-all
   allow_failure: true
-  before_script: []
+  rules:
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "false"'
   script:
-  - ls gluon/output/images/sysupgrade/ | grep wdr3600
-  - ls gluon/output/images/sysupgrade/ | grep ubiquiti-unifi
-  - ls gluon/output/images/sysupgrade/ | grep wr1043n
-  - ls gluon/output/images/sysupgrade/ | grep avm-fritz-box-4040
-  - ls gluon/output/images/sysupgrade/ | grep x86-64
-  - ls gluon/output/images/sysupgrade/ | grep x86-generic
-  - ls gluon/output/images/sysupgrade/ | grep wdr4300
-  - ls gluon/output/images/sysupgrade/ | grep tp-link-cpe210
-  - ls gluon/output/images/sysupgrade/ | grep ubiquiti-unifi-ac-mesh
-  - ls gluon/output/images/sysupgrade/ | grep d-link-dap-x1860-a1
-  - ls gluon/output/images/sysupgrade/ | grep eap225-outdoor-v1
-  - ls gluon/output/images/sysupgrade/ | grep gl.inet-gl-usb150
-  - ls gluon/output/images/sysupgrade/ | grep nanostation-loco-m-xw
-  - ls gluon/output/images/sysupgrade/ | grep nanostation-m-xw
-  - ls gluon/output/images/sysupgrade/ | grep plasma-cloud-pa2200
+    - ls gluon/output/images/sysupgrade/ | grep wdr3600
+    - ls gluon/output/images/sysupgrade/ | grep ubiquiti-unifi
+    - ls gluon/output/images/sysupgrade/ | grep wr1043n
+    - ls gluon/output/images/sysupgrade/ | grep avm-fritz-box-4040
+    - ls gluon/output/images/sysupgrade/ | grep x86-64
+    - ls gluon/output/images/sysupgrade/ | grep x86-generic
+    - ls gluon/output/images/sysupgrade/ | grep wdr4300
+    - ls gluon/output/images/sysupgrade/ | grep tp-link-cpe210
+    - ls gluon/output/images/sysupgrade/ | grep ubiquiti-unifi-ac-mesh
+    - ls gluon/output/images/sysupgrade/ | grep d-link-dap-x1860-a1
+    - ls gluon/output/images/sysupgrade/ | grep eap225-outdoor-v1
+    - ls gluon/output/images/sysupgrade/ | grep plasma-cloud-pa2200
+
 test:image-names:
   stage: test
-  needs:
-  - build-all
   allow_failure: false
-  before_script: []
+  rules:
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "false"'
   script:
-  - scripts/ci/test_image_names.sh gluon/output/images/sysupgrade
+    - scripts/ci/test_image_names.sh gluon/output/images/sysupgrade
+
+
 generate manifest:
   stage: post build
-  needs:
-  - build-all
   cache:
     paths:
     - ccache
@@ -131,80 +202,90 @@ generate manifest:
   - ccache -s
   - ccache -z
   - make -C gluon GLUON_SITEDIR=.. update
-  - make -C gluon GLUON_SITEDIR=.. GLUON_PRIORITY=7 GLUON_AUTOUPDATER_BRANCH=stable manifest
-  - make -C gluon GLUON_SITEDIR=.. GLUON_PRIORITY=0 GLUON_AUTOUPDATER_BRANCH=beta manifest
-  - make -C gluon GLUON_SITEDIR=.. GLUON_PRIORITY=0 GLUON_AUTOUPDATER_BRANCH=experimental manifest
+  - make -C gluon GLUON_SITEDIR=.. GLUON_PRIORITY=7 GLUON_AUTOUPDATER_BRANCH=stable GLUON_BRANCH=stable manifest
+  - make -C gluon GLUON_SITEDIR=.. GLUON_PRIORITY=0 GLUON_AUTOUPDATER_BRANCH=beta GLUON_BRANCH=beta manifest
+  - make -C gluon GLUON_SITEDIR=.. GLUON_PRIORITY=0 GLUON_AUTOUPDATER_BRANCH=experimental GLUON_BRANCH=experimental manifest
   - ccache -s
   artifacts:
     when: always
     expire_in: 3 day
     paths:
-    - gluon/output/images/sysupgrade/*.manifest
+      - gluon/output
+  rules:
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "false"'
+
+
 sign manifest:
   stage: prepare-deploy
   needs:
-  - job: generate manifest
-    artifacts: true
+    - job: generate manifest
+      artifacts: true
   rules:
-  - if: $SIGNING_KEY
+    # weird syntax: if gluon_debug_build == true, never run this job
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "true"'
+      when: never
+    - if: $SIGNING_KEY
   script:
-  - echo $SIGNING_KEY > ecdsa.key
-  - ./gluon/contrib/sign.sh ecdsa.key gluon/output/images/sysupgrade/experimental.manifest
+    - echo $SIGNING_KEY > ecdsa.key
+    - ./gluon/contrib/sign.sh ecdsa.key gluon/output/images/sysupgrade/experimental.manifest
   artifacts:
     when: always
     expire_in: 3 day
     paths:
-    - gluon/output/images/sysupgrade/*.manifest
+      - gluon/output/images/sysupgrade/*.manifest
+
 test:manifest-length:
   stage: test-deploy
   needs:
-  - job: generate manifest
-    artifacts: true
+    - job: generate manifest
+      artifacts: true
+  allow_failure: true
   before_script: []
   script:
-  - bash scripts/ci/test_manifest_length.sh
+    - bash scripts/ci/test_manifest_length.sh
+  rules:
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "false"'
+
 test:manifest-signature:
   stage: test-deploy
-  needs:
-  - job: sign manifest
-    artifacts: true
   rules:
-  - if: $SIGNING_KEY
+    - if: $SIGNING_KEY
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "false"'
   before_script: []
   script:
-  - PUBKEY=$(echo $SIGNING_KEY | ecdsakeygen -p)
-  - ./gluon/contrib/sigtest.sh $PUBKEY gluon/output/images/sysupgrade/experimental.manifest
+    - PUBKEY=$(echo $SIGNING_KEY | ecdsakeygen -p)
+    - ./gluon/contrib/sigtest.sh $PUBKEY gluon/output/images/sysupgrade/experimental.manifest
+
+
 upload:
   stage: deploy
-  needs:
-  - job: sign manifest
-    artifacts: true
-  - job: build-all
-    artifacts: true
   rules:
-  - if: $DEPLOY_USER && $DEPLOY_HOST
+    - if: '"$[[ inputs.gluon_debug_build ]]" == "true"'
+      when: never # dont run if debug_build == true
+    - if: $DEPLOY_USER && $DEPLOY_HOST
   before_script:
-  - apt-get -qq update
-  - apt-get -qq install -y git make gawk wget python2.7 file tar bzip2 rsync tree
-  - mkdir -p ~/.ssh
-  - echo -e "StrictHostKeyChecking no" > ~/.ssh/config
-  - eval $(ssh-agent -s)
-  - echo "$DEPLOY_KEY" | ssh-add -
+    - apt-get -qq update
+    - apt-get -qq install -y git make gawk wget python2.7 file tar bzip2 rsync tree
+    - mkdir -p ~/.ssh
+    - echo -e "StrictHostKeyChecking no" > ~/.ssh/config
+    - eval $(ssh-agent -s)
+    - echo "$DEPLOY_KEY" | ssh-add -
   script:
-  - tree -L 3 gluon/output
-  - TAG=$([[ $CI_COMMIT_TAG ]] && echo $CI_COMMIT_TAG || echo $CI_COMMIT_BRANCH)_$(date +%F_%H-%M-%S)
-  - mkdir -p "public/$TAG"
-  - cd gluon
-  - mv output $TAG
-  - ln -s ./$TAG ./latest
-  - rsync -rvhl ./$TAG ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/
-  - rsync -rvhl ./latest ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/
-upload-package-registry:
+    - tree -L 3 gluon/output
+    - TAG=$([[ $CI_COMMIT_TAG ]] && echo $CI_COMMIT_TAG || echo $CI_COMMIT_BRANCH)_$(date -d "$CI_PIPELINE_CREATED_AT" +%F_%H-%M-%S)
+    - mkdir -p "public/$TAG"
+    - cd gluon
+    - mv output $TAG
+    - ln -s ./$TAG ./latest
+    - rsync -rvhl ./$TAG ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/
+    - rsync -rvhl ./latest ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/
+
+upload-to-gitlab:
   stage: deploy
   script:
-  - TAG=$([[ $CI_COMMIT_TAG ]] && echo $CI_COMMIT_TAG || echo $CI_COMMIT_BRANCH)_$(date +%F_%H-%M-%S)
-  - tree -L 3
-  - tar -cvzf firmware.tar.gz gluon/output
-  - 'curl --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file firmware.tar.gz "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ffhl-firmware/$TAG/ffhl-firmware.tar.gz"'
+    - TAG=$([[ $CI_COMMIT_TAG ]] && echo $CI_COMMIT_TAG || echo $CI_COMMIT_BRANCH)_$(date -d "$CI_PIPELINE_CREATED_AT" +%F_%H-%M-%S)
+    - tree -L 3
+    - tar -cvzf firmware.tar.gz gluon/output
+    - 'curl --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file firmware.tar.gz "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ffhl-firmware/$TAG/ffhl-firmware.tar.gz"'
   rules:
-  - if: $GITLAB_CI
+    - if: $GITLAB_CI
