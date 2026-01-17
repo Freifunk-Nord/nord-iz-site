@@ -286,6 +286,6 @@ upload-to-gitlab:
     - TAG=$([[ $CI_COMMIT_TAG ]] && echo $CI_COMMIT_TAG || echo $CI_COMMIT_BRANCH)_$(date -d "$CI_PIPELINE_CREATED_AT" +%F_%H-%M-%S)
     - tree -L 3
     - tar -cvzf firmware.tar.gz gluon/output
-    - 'curl --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file firmware.tar.gz "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ffhl-firmware/$TAG/ffhl-firmware.tar.gz"'
+    - 'curl --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file firmware.tar.gz "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/gluon/$TAG/firmware.tar.gz"'
   rules:
     - if: $GITLAB_CI
